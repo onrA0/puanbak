@@ -60,6 +60,11 @@ dialog label{display:block;margin:12px 0 4px;font-size:14px;color:var(--mut)}
 dialog input{width:100%;background:var(--bg);border:1px solid #2b3160;color:var(--tx);border-radius:10px;padding:10px 12px}
 dialog a{color:var(--acc)}
 .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.row .rt{margin-left:auto;text-align:right;flex:none;padding-left:6px}
+.row .rt b{display:block;font-size:17px}
+.row .rt small{display:block;font-size:11px;min-height:14px}
+.row .ov{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--mut);font-size:12px}
+.chip{cursor:pointer}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -69,6 +74,11 @@ dialog a{color:var(--acc)}
   <button class="icon-btn" id="btnSet" aria-label="Ayarlar">⚙</button>
 </header>
 <main>
+  <nav class="tabs" id="modes">
+    <button class="chip on" data-mode="look">Puan Bak</button>
+    <button class="chip" data-mode="find">Film Bul</button>
+  </nav>
+  <div id="viewLook">
   <form id="searchForm">
     <input id="q" placeholder="Film/dizi adı veya paylaşılan metin" autocomplete="off">
     <button class="btn">Ara</button>
@@ -82,6 +92,22 @@ dialog a{color:var(--acc)}
     </div>
     <div id="list"></div>
   </section>
+  </div>
+
+  <div id="viewFind" hidden>
+    <div class="card">
+      <h3 style="margin-top:0">Platform</h3>
+      <div class="chips" id="fPlat"></div>
+      <h3>Tür</h3>
+      <div class="chips" id="fGenre"></div>
+      <h3>Puan</h3>
+      <div class="chips" id="fRate"></div>
+      <button class="btn" id="btnFind" type="button" style="width:100%;height:46px;margin-top:16px">Bul</button>
+    </div>
+    <div id="fstatus" class="note"></div>
+    <div id="fList"></div>
+    <button class="btn sec" id="btnMore" type="button" style="width:100%" hidden>Daha fazla göster</button>
+  </div>
 </main>
 
 <dialog id="dlg">
@@ -329,6 +355,112 @@ $('#searchForm').onsubmit=e=>{
   e.preventDefault();
   const s=parseShared('',$('#q').value.trim(),'');
   run(s.name,s.type,s.link);
+};
+
+/* ---------- Film Bul ---------- */
+const PLATS=[
+  {k:'tv',n:'TV+',re:/^tv ?\+$/i,fb:null},
+  {k:'hbo',n:'HBO Max',re:/^(hbo max|max)$/i,fb:1899},
+  {k:'prime',n:'Amazon Prime',re:/^amazon prime video$/i,fb:119}
+];
+const GENRES=[[0,'Tümü'],[28,'Aksiyon'],[35,'Komedi'],[53,'Gerilim'],[18,'Dram'],[27,'Korku'],[878,'Bilim Kurgu'],[10749,'Romantik'],[12,'Macera'],[80,'Suç'],[9648,'Gizem'],[16,'Animasyon'],[10751,'Aile'],[14,'Fantastik']];
+const RATES=[{k:'mid',n:'70–80',min:7,max:8},{k:'hi',n:'80 ve üstü',min:8,max:null}];
+let fsel=Object.assign({p:'tv',g:0,r:'mid'},LS.get('fsel',{}));
+let fpage=0,ftotal=0,ftoken=0;
+
+function calcAvg(d,o){
+  const imdb=o?parseFloat(o.imdbRating):NaN;
+  const rt=o?parseInt((o.Ratings||[]).find(r=>r.Source==='Rotten Tomatoes')?.Value):NaN;
+  const mc=o?parseInt(o.Metascore):NaN;
+  const tm=d.vote_count>=5?d.vote_average:NaN;
+  const p=[imdb*10,rt,mc,tm*10].filter(x=>!isNaN(x));
+  return p.length?Math.round(p.reduce((a,b)=>a+b,0)/p.length):NaN;
+}
+
+function drawChips(){
+  const mk=(id,items,cur,attr)=>{$(id).innerHTML=items.map(([v,n])=>`<button type="button" class="chip ${String(v)===String(cur)?'on':''}" data-${attr}="${v}">${esc(n)}</button>`).join('')};
+  mk('#fPlat',PLATS.map(p=>[p.k,p.n]),fsel.p,'fp');
+  mk('#fGenre',GENRES,fsel.g,'fg');
+  mk('#fRate',RATES.map(r=>[r.k,r.n]),fsel.r,'fr');
+}
+function pick(e,attr,key){
+  const b=e.target.closest(`[data-${attr}]`); if(!b) return;
+  fsel[key]=key==='g'?+b.dataset[attr]:b.dataset[attr];
+  LS.set('fsel',fsel);drawChips();
+}
+$('#fPlat').onclick=e=>pick(e,'fp','p');
+$('#fGenre').onclick=e=>pick(e,'fg','g');
+$('#fRate').onclick=e=>pick(e,'fr','r');
+
+async function provId(p){
+  const c=LS.get('prov',{});
+  if(c[p.k]) return c[p.k];
+  const j=await tmdb('/watch/providers/movie',{watch_region:'TR'});
+  const hit=(j.results||[]).find(x=>p.re.test(String(x.provider_name).replace(/\s+/g,' ').trim()));
+  const id=hit?hit.provider_id:p.fb;
+  if(hit){c[p.k]=id;LS.set('prov',c)}
+  return id;
+}
+
+function setMode(m){
+  $('#viewLook').hidden=m!=='look';
+  $('#viewFind').hidden=m!=='find';
+  document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('on',b.dataset.mode===m));
+  if(m==='find') drawChips();
+  window.scrollTo(0,0);
+}
+document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
+
+async function findMovies(reset){
+  if(!cfg().tmdb){openSettings();$('#fstatus').textContent='Önce TMDB anahtarını gir.';return}
+  const my=++ftoken;
+  const p=PLATS.find(x=>x.k===fsel.p)||PLATS[0];
+  const r=RATES.find(x=>x.k===fsel.r)||RATES[0];
+  if(reset){fpage=0;$('#fList').innerHTML='';$('#btnMore').hidden=true}
+  $('#fstatus').textContent='Aranıyor…';
+  try{
+    const id=await provId(p);
+    if(!id){$('#fstatus').textContent=`${p.n} TMDB'de bulunamadı.`;return}
+    const params={watch_region:'TR',with_watch_providers:id,with_watch_monetization_types:'flatrate',sort_by:'popularity.desc','vote_count.gte':150,'vote_average.gte':r.min,include_adult:'false',page:fpage+1};
+    if(r.max) params['vote_average.lte']=r.max-0.01;
+    if(fsel.g) params.with_genres=fsel.g;
+    const j=await tmdb('/discover/movie',params);
+    if(my!==ftoken) return;
+    fpage=j.page||fpage+1;ftotal=j.total_results||0;
+    const items=j.results||[];
+    if(!items.length&&reset){$('#fstatus').textContent='Bu seçimlere uyan film bulunamadı. Türü veya platformu değiştirmeyi dene.';return}
+    $('#fstatus').textContent=`${ftotal} film bulundu`;
+    const start=$('#fList').children.length;
+    $('#fList').insertAdjacentHTML('beforeend',items.map(x=>{
+      const y=(x.release_date||'').slice(0,4);
+      return `<button class="row" data-fid="${x.id}">${x.poster_path?`<img src="https://image.tmdb.org/t/p/w92${x.poster_path}" alt="">`:'<div class="ph"></div>'}<div style="min-width:0"><b>${esc(x.title)}</b>${y?` <small>(${y})</small>`:''}<div class="ov">${esc(x.overview||'')}</div></div><div class="rt"><b>${(x.vote_average*10).toFixed(0)}</b><small id="sc-${x.id}">TMDB</small></div></button>`}).join(''));
+    $('#btnMore').hidden=fpage*20>=ftotal||fpage>=25;
+    if(cfg().omdb) enrich(items,my);
+  }catch(e){if(my===ftoken)$('#fstatus').textContent='Hata: '+e.message}
+}
+
+async function enrich(items,my){
+  const q=items.slice();
+  const worker=async()=>{
+    while(q.length&&my===ftoken){
+      const x=q.shift();
+      try{
+        const {d,o}=await getInfo({id:x.id,media_type:'movie'});
+        const el=document.getElementById('sc-'+x.id);
+        const a=calcAvg(d,o);
+        if(el&&!isNaN(a)){el.textContent='ortalama';el.parentElement.firstElementChild.textContent=a}
+      }catch{}
+    }
+  };
+  await Promise.all([worker(),worker(),worker()]);
+}
+
+$('#btnFind').onclick=()=>findMovies(true);
+$('#btnMore').onclick=()=>findMovies(false);
+$('#fList').onclick=e=>{
+  const b=e.target.closest('[data-fid]'); if(!b) return;
+  state={results:[{id:+b.dataset.fid,media_type:'movie'}],idx:0,link:''};
+  setMode('look');$('#home').hidden=true;$('#result').innerHTML='';show(0);
 };
 
 /* başlangıç: paylaşımla açıldıysa otomatik çalıştır */
