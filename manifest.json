@@ -1,0 +1,21 @@
+{
+  "id": "./",
+  "name": "PuanBak – Film ve Dizi Puanları",
+  "short_name": "PuanBak",
+  "description": "TV+ ve diğer uygulamalardan paylaşılan film/dizi bağlantısının IMDb, Rotten Tomatoes ve diğer puanlarını gösterir.",
+  "lang": "tr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f1220",
+  "theme_color": "#0f1220",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "share_target": {
+    "action": "./index.html",
+    "method": "GET",
+    "params": { "title": "title", "text": "text", "url": "url" }
+  }
+}
